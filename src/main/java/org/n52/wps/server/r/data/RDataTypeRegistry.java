@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -35,24 +35,17 @@ import java.util.HashMap;
 import org.n52.wps.server.r.syntax.RAnnotationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
+/**
+ *
+ * @author Daniel Nüst
+ *
+ */
+@Component
 public class RDataTypeRegistry {
 
-    private static Logger LOGGER = LoggerFactory.getLogger(CustomDataTypeManager.class);
-
-    private static RDataTypeRegistry instance = new RDataTypeRegistry();
-
-    private RDataTypeRegistry() {
-
-    }
-
-    public static RDataTypeRegistry getInstance()
-    {
-        if (instance == null) {
-            instance = new RDataTypeRegistry();
-        }
-        return instance;
-    }
+    private static Logger LOGGER = LoggerFactory.getLogger(RDataTypeRegistry.class);
 
     private HashMap<String, RTypeDefinition> customDataTypes = new HashMap<String, RTypeDefinition>();
 
@@ -60,133 +53,156 @@ public class RDataTypeRegistry {
 
     private HashMap<String, RTypeDefinition> rDataTypeAlias = new HashMap<String, RTypeDefinition>();
 
-    // TODO: Eventually throw Exceptions here?
-    public void register(RDataType type)
-    {
+    @Deprecated
+    public RDataTypeRegistry() {
+        // register types from enum
+        LOGGER.info("NEW {}", this);
+        RDataType[] values = RDataType.values();
+        for (RDataType type : values) {
+            register(type);
+        }
+        logDataTypeTable();
+    }
+
+    public void register(RDataType type) {
         this.rDataTypeKeys.put(type.getKey(), type);
 
         // put process key, i.e. mimetype or xml-notation for literal type, as
-        // alternative key (alias) into
-        // Hashmap:
-        if (!containsKey(type.getProcessKey()))
-            this.rDataTypeAlias.put(type.getProcessKey(), type);
-        else
-            LOGGER.warn("Doubled definition of data type-key for notation: " + type.getProcessKey() + "\n" + "only the first definition will be used for this key.+"
+        // alternative key (alias) into Hashmap:
+        if ( !containsKey(type.getMimeType())) {
+            this.rDataTypeAlias.put(type.getMimeType(), type);
+        } else {
+            LOGGER.warn("Doubled definition of data type-key for notation: "
+                    + type.getMimeType()
+                    + "\n"
+                    + "only the first definition will be used for this key.+"
                     + "(That might be the usual case if more than one annotation type key refer to one WPS-mimetype with different data handlers)");
+        }
     }
 
-    public boolean containsKey(String key)
-    {
+    public boolean containsKey(String key) {
         return this.rDataTypeKeys.containsKey(key) || this.rDataTypeAlias.containsKey(key);
     }
 
     /**
-     * This method is important for parsers to request the meaning of a specific
-     * key
-     * 
+     * This method is important for parsers to request the meaning of a specific key
+     *
      * @param key
-     *            process keys and self defined short keys are recognized as
-     *            dataType keys
-     * @return
-     * @throws RAnnotationException
+     *        process keys and self defined short keys are recognized as dataType keys
+     * @return the <code>RTypeDefinition</code> belonging to the key
+     * @throws RAnnotationException if an invalid key was passed
      */
-    public RTypeDefinition getType(String key) throws RAnnotationException
-    {
+    public RTypeDefinition getType(String key) throws RAnnotationException {
         RTypeDefinition out = this.rDataTypeKeys.get(key);
-        if (out == null)
+        if (out == null) {
             out = this.rDataTypeAlias.get(key);
-        if (out == null)
+        }
+        if (out == null) {
             out = this.customDataTypes.get(key);
-        if (out == null)
+        }
+        if (out == null) {
             throw new RAnnotationException("Invalid datatype key for R script annotations: " + key);
+        }
 
         return out;
     }
 
-    public Collection<RTypeDefinition> getDefinitions()
-    {
+    public Collection<RTypeDefinition> getDefinitions() {
         ArrayList<RTypeDefinition> definitions = new ArrayList<RTypeDefinition>();
         definitions.addAll(this.rDataTypeKeys.values());
         definitions.addAll(getCustomDataTypes());
         return definitions;
     }
 
-    public Collection<RTypeDefinition> getCustomDataTypes()
-    {
+    public Collection<RTypeDefinition> getCustomDataTypes() {
         return this.customDataTypes.values();
     }
 
-    public static RTypeDefinition test = RDataType.DOUBLE;
-
-    private static String addTabbs(String s,
-            int nmax)
-    {
-        int n = nmax - s.length();
-        String out = "";
-        for (int i = 0; i < n; i++) {
-            out += " ";
-        }
-        return out;
+    /**
+     * Deletes all registered custom type definitions (Useful for instance, if the config file was changed)
+     */
+    public void clearCustomDataTypes() {
+        this.customDataTypes.clear();
     }
 
-    public String toString()
-    {
-        String out = "RDataTypeRegistry:\nKey\t\t    MimeType\t\t\t\t    Schema\tEncoding   isComplex\tDataBinding";
-        out += "\n-------------------------------------------------------------------------------------------------";
-        out += "---------------------------";
+    public void logDataTypeTable() {
 
-        Collection<RTypeDefinition> definitions = getInstance().getDefinitions();
-        String complex = "";
-        String literal = "";
+        int maxLengthKeys = "Key".length();
+        int maxLengthMimetype = "Mimetype".length();
+        int maxLengthSchema = "Schema".length();
+        int maxLengthEncoding = "Encoding".length();
+        int maxLengthComplex = "isComplex".length();
+        int maxLengthDataBinding = "DataBinding".length();
+
+        Collection<RTypeDefinition> definitions = getDefinitions();
+        for (RTypeDefinition definition : definitions) {
+            maxLengthKeys = Math.max(maxLengthKeys, getLengthOf(definition.getKey()));
+            maxLengthMimetype = Math.max(maxLengthMimetype, getLengthOf(definition.getMimeType()));
+            maxLengthSchema = Math.max(maxLengthSchema, getLengthOf(definition.getSchema()));
+            maxLengthEncoding = Math.max(maxLengthEncoding, getLengthOf(definition.getEncoding()));
+            maxLengthComplex = Math.max(maxLengthComplex, getLengthOf(Boolean.toString(definition.isComplex())));
+            maxLengthDataBinding = Math.max(maxLengthDataBinding, getLengthOf(definition.getClass().getSimpleName()));
+        }
+
+        StringBuilder sb = new StringBuilder("RDataTypeRegistry: \n");
+        sb.append("Key").append(getSpacesToFillGapFor("Key", maxLengthKeys));
+        sb.append("MimeType").append(getSpacesToFillGapFor("MimeType", maxLengthMimetype));
+        sb.append("Schema").append(getSpacesToFillGapFor("Schema", maxLengthSchema));
+        sb.append("Encoding").append(getSpacesToFillGapFor("Encoding", maxLengthEncoding));
+        sb.append("isComplex").append(getSpacesToFillGapFor("isComplex", maxLengthComplex));
+        sb.append("DataBinding").append(getSpacesToFillGapFor("DataBinding", maxLengthDataBinding));
+
+        sb.append("\n");
+        int tablewidth = sb.length();
+        for (int i = 0 ; i < tablewidth ; i++) {
+            sb.append("-"); // underlines header
+        }
+        sb.append("\n");
 
         for (RTypeDefinition type : definitions) {
-            String temp = "";
-            temp += "\n";
-            String val = type.getKey();
-            temp += val + addTabbs("" + val, 20);
+            final String key = type.getKey();
+            final String mimeType = type.getMimeType();
+            final String schema = type.getSchema();
+            final String encoding = type.getEncoding();
+            final String complex = Boolean.toString(type.isComplex());
+            final String dataBinding = type.getClass().getSimpleName();
 
-            val = type.getProcessKey();
-            temp += val + addTabbs("" + val, 40);
-
-            val = type.getSchema();
-            temp += val + addTabbs("" + val, 12);
-
-            val = type.getEncoding();
-            temp += val + addTabbs("" + val, 12);
-
-            val = "" + type.isComplex();
-            temp += val + addTabbs("" + val, 12);
-
-            val = type.getIDataClass().getSimpleName();
-            temp += val + addTabbs("" + val, 12);
-
-            if (type.isComplex())
-                complex += temp;
-            else
-                literal += temp;
+            sb.append(key).append(getSpacesToFillGapFor(key, maxLengthKeys));
+            sb.append(mimeType).append(getSpacesToFillGapFor(mimeType, maxLengthMimetype));
+            sb.append(schema).append(getSpacesToFillGapFor(schema, maxLengthSchema));
+            sb.append(encoding).append(getSpacesToFillGapFor(encoding, maxLengthEncoding));
+            sb.append(complex).append(getSpacesToFillGapFor(complex, maxLengthComplex));
+            sb.append(dataBinding).append(getSpacesToFillGapFor(dataBinding, maxLengthDataBinding));
+            sb.append("\n");
         }
-        return out + literal + complex;
+
+        LOGGER.info("R Data Type Mapping: {}", sb.toString());
     }
 
-    public static void main(String[] args)
-    {
-
-        System.out.println(RDataTypeRegistry.getInstance());
+    private int getLengthOf(String text) {
+        return text != null ? text.length() : 4; // null -> 4 characters
     }
 
-    public void register(CustomDataType type)
-    {
+    private String getSpacesToFillGapFor(String text, int columnWidth) {
+        if (text == null) {
+            text = "null";
+        }
+        if (text.length() > columnWidth) {
+            throw new IllegalArgumentException("'" + text + "' does not fit into column of with " + columnWidth);
+        }
+
+        String spaces = "";
+        int countSpaces = columnWidth - text.length();
+        for (int i = 0 ; i < countSpaces ; i++) {
+            spaces += " ";
+        }
+        spaces += "  "; // separate columns
+        return spaces;
+    }
+
+    public void register(CustomDataType type) {
         this.customDataTypes.put(type.getKey(), type);
         LOGGER.debug("New custom data type registered: {}", type);
-    }
-
-    /**
-     * Deletes all registered custom type definitions (Useful for instance, if
-     * the config file was changed)
-     */
-    public void clearCustomDataTypes()
-    {
-        this.customDataTypes.clear();
     }
 
 }

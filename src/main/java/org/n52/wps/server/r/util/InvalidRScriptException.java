@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -26,26 +26,22 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
  * Public License for more details.
  */
-package org.n52.wps.server.r;
+package org.n52.wps.server.r.util;
 
-import java.util.List;
+/**
+ *
+ * @author Henning Bredel (contact h.bredel@52north.org)
+ */
+public class InvalidRScriptException extends Exception {
 
-import org.junit.Test;
-import org.n52.wps.server.r.info.RProcessInfo;
+    private static final long serialVersionUID = 2379056556369333118L;
 
-public class ProcessInfo {
+    public InvalidRScriptException(String message) {
+        super(message);
+    }
 
-    @Test
-    public void dummy()
-    {
-        List<RProcessInfo> rProcessInfoList = RProcessInfo.getRProcessInfoList();
-        for (RProcessInfo rProcessInfo : rProcessInfoList) {
-            rProcessInfo.getWkn();
-            rProcessInfo.isAvailable();
-            rProcessInfo.isValid();
-            rProcessInfo.getLastException().getMessage();
-            rProcessInfo.getScriptURL();
-        }
+    public InvalidRScriptException(String message, Throwable cause) {
+        super(message, cause);
     }
 
 }

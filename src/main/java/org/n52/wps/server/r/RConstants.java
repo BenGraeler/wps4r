@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -28,26 +28,23 @@
  */
 package org.n52.wps.server.r;
 
-import java.io.File;
-import java.net.URISyntaxException;
-import java.net.URL;
+import org.springframework.http.MediaType;
 
-import org.junit.Assert;
+/**
+ *
+ * @author Daniel Nüst
+ *
+ */
+public class RConstants {
 
-public class Util {
+    public static final String RDATA_FILE_EXTENSION = "RData";
 
-    public static File loadFile(String filePath)
-    {
-        URL r = AnnotationParser.class.getResource(filePath);
-        File f;
-        try {
-            f = new File(r.toURI());
-        } catch (URISyntaxException e) {
-            Assert.fail("Invalid file path (not URI).");
-            return null;
-        }
+    public static final String R_FILE_EXTENSION = "R";
 
-        return f;
-    }
+    public static final String R_SCRIPT_TYPE_VALUE = "text/x-r";
+
+    public static final MediaType R_SCRIPT_TYPE = MediaType.valueOf(R_SCRIPT_TYPE_VALUE);
+
+    public static final String MIME_TYPE_SOURCE = "text/x-r-source";
 
 }

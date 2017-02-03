@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -31,78 +31,107 @@ package org.n52.wps.server.r.syntax;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 
+import org.n52.wps.server.ExceptionReport;
+import org.n52.wps.server.r.data.RDataTypeRegistry;
 import org.n52.wps.server.r.data.R_Resource;
+import org.n52.wps.server.r.util.ResourceUrlGenerator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-// TODO resources should behave more similar to regular annotations, so that i can access the resources using the getObjectValue(...)
+/**
+ *
+ * @author Matthias Hinz, Daniel Nüst
+ *
+ */
 public class ResourceAnnotation extends RAnnotation {
 
-    private List<R_Resource> resources = new ArrayList<R_Resource>();
+    private static final Logger log = LoggerFactory.getLogger(ResourceAnnotation.class);
 
-    private String resourceDirUrl;
+    private List<R_Resource> resources = new ArrayList<>();
 
-    public ResourceAnnotation(HashMap<RAttribute, Object> attributeHash,
-                              List<R_Resource> resources,
-                              String resourceDirUrl) throws IOException,
+    private final ResourceUrlGenerator urlGenerator;
+
+    public ResourceAnnotation(List<R_Resource> resources, RDataTypeRegistry dataTypeRegistry, ResourceUrlGenerator urlGenerator) throws IOException,
             RAnnotationException {
-        super(RAnnotationType.RESOURCE, attributeHash);
+        super(RAnnotationType.RESOURCE, new HashMap<>(), dataTypeRegistry);
         this.resources.addAll(resources);
-        this.resourceDirUrl = resourceDirUrl;
+        this.urlGenerator = urlGenerator;
+        log.trace("NEW {}", this);
     }
 
     @Override
-    public Object getObjectValue(RAttribute attr) throws RAnnotationException
-    {
+    public Object getObjectValue(RAttribute attr) throws RAnnotationException {
         if (attr.equals(RAttribute.NAMED_LIST)) {
             return getResources();
-        } else if (attr.equals(RAttribute.NAMED_LIST_R_SYNTAX)) {
-
+        }
+        else if (attr.equals(RAttribute.NAMED_LIST_R_SYNTAX)) {
             StringBuilder namedList = new StringBuilder();
             namedList.append("list(");
             boolean startloop = true;
             // have to process the resources to get full URLs to the files
             for (R_Resource resource : this.resources) {
+                // String fullResourceURL = resource.getFullResourceURL(this.resourceDirUrl).toExternalForm();
+                String fullResourceURL;
+                try {
+                    fullResourceURL = urlGenerator.getResourceURL(resource).toExternalForm();
+                }
+                catch (ExceptionReport e) {
+                    log.error("Could not create full resource URL for {}", resource);
+                    continue;
+                }
+
                 if (startloop) {
                     startloop = false;
-                } else {
+                }
+                else {
                     namedList.append(", ");
                 }
-                String fullResourceURL = resource.getFullResourceURL(this.resourceDirUrl).toExternalForm();
 
                 String resourceName = resource.getResourceValue();
 
                 if (fullResourceURL != null) {
-                    namedList.append("\"" + resourceName + "\"" + " = " + "\"" + fullResourceURL + "\"");
-                } else
-                    namedList.append("\"" + resourceName + "\"" + " = " + "\"" + resourceName + "\"");
-
+                    namedList.append("\"").append(resourceName).append("\"");
+                    namedList.append(" = ");
+                    namedList.append("\"").append(fullResourceURL).append("\"");
+                }
+                else {
+                    namedList.append("\"").append(resourceName).append("\"");
+                    namedList.append(" = ");
+                    namedList.append("\"").append(resourceName).append("\"");
+                }
             }
             namedList.append(")");
 
+            log.trace("Created resource list for usage in R: {}", namedList);
             return namedList.toString();
-        } else
-            throw new RAnnotationException("Attribe not defined for this annotation.");
+        }
+        else {
+            throw new RAnnotationException("Attribute '{}' not defined for this annotation: {}", attr, this);
+        }
     }
 
-    public List<R_Resource> getResources()
-    {
-        if (this.resources == null)
-            this.resources = new ArrayList<R_Resource>();
+    protected Collection<R_Resource> getResources() {
+        if (this.resources == null) {
+            this.resources = new ArrayList<>();
+        }
 
         return this.resources;
     }
 
     @Override
-    public String toString()
-    {
+    public String toString() {
         StringBuilder builder = new StringBuilder();
         builder.append("ResourceAnnotation [resources=");
-        if (this.resources != null)
+        if (this.resources != null) {
             builder.append(Arrays.toString(this.resources.toArray()));
-        else
+        }
+        else {
             builder.append("<null>");
+        }
         builder.append("]");
         return builder.toString();
     }

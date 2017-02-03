@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -39,10 +39,10 @@ public interface RTypeDefinition {
     public abstract String getKey();
 
     /**
-     * 
+     *
      * @return Type-expression used in the processDescription
      */
-    public abstract String getProcessKey();
+    public abstract String getMimeType();
 
     public abstract boolean isComplex();
 
@@ -52,20 +52,20 @@ public interface RTypeDefinition {
     // public abstract boolean isLitearal();
 
     /**
-     * 
+     *
      * @return (default) encoding or null if not applicable
      */
     public abstract String getEncoding();
 
     /**
-     * 
+     *
      * @return (default) Schema
      */
     public abstract String getSchema();
 
     /**
      * Refers to the Databinding in use
-     * 
+     *
      * @return IData class
      */
     public abstract Class<? extends IData> getIDataClass();

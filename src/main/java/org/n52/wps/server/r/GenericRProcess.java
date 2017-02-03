@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -41,15 +41,20 @@ import java.util.List;
 import java.util.Map;
 
 import net.opengis.wps.x100.ProcessDescriptionType;
+import net.opengis.wps.x100.ProcessDescriptionsDocument;
 
 import org.n52.wps.io.data.IData;
 import org.n52.wps.server.AbstractObservableAlgorithm;
 import org.n52.wps.server.ExceptionReport;
+import org.n52.wps.server.ProcessDescription;
+import org.n52.wps.server.r.data.RDataTypeRegistry;
+import org.n52.wps.server.r.data.R_Resource;
 import org.n52.wps.server.r.metadata.RAnnotationParser;
 import org.n52.wps.server.r.metadata.RProcessDescriptionCreator;
 import org.n52.wps.server.r.syntax.RAnnotation;
 import org.n52.wps.server.r.syntax.RAnnotationException;
 import org.n52.wps.server.r.syntax.RAnnotationType;
+import org.n52.wps.server.r.syntax.RAttribute;
 import org.n52.wps.server.r.util.RExecutor;
 import org.n52.wps.server.r.util.RLogger;
 import org.n52.wps.server.r.workspace.RIOHandler;
@@ -61,114 +66,128 @@ import org.rosuda.REngine.Rserve.RserveException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.collect.Lists;
+import org.n52.wps.server.r.util.InvalidRScriptException;
+import org.n52.wps.server.r.util.ResourceUrlGenerator;
+import org.springframework.beans.factory.annotation.Autowired;
+
 public class GenericRProcess extends AbstractObservableAlgorithm {
 
-    private static Logger log = LoggerFactory.getLogger(GenericRProcess.class);
+    private static final Logger log = LoggerFactory.getLogger(GenericRProcess.class);
 
-    // private variables holding process information - initialization in
-    // constructor
-    private List<RAnnotation> annotations;
+    private final List<String> errors = new ArrayList<>();
+
+    private final RExecutor executor = new RExecutor();
+
+    private final RIOHandler iohandler;
 
     private R_Config config;
 
-    private List<String> errors = new ArrayList<String>();
-
-    private RExecutor executor = new RExecutor();
-
-    private RIOHandler iohandler = new RIOHandler();
-
+    @Autowired
     private RAnnotationParser parser;
 
-    private File scriptFile = null;
+    @Autowired
+    private ScriptFileRepository scriptRepo;
 
-    private boolean shutdownRServerAfterRun = false;
+    @Autowired
+    private ResourceFileRepository resourceRepo;
+
+    private List<RAnnotation> annotations;
+
+    private final boolean shutdownRServerAfterRun = false;
+
+    private final ResourceUrlGenerator urlGenerator;
 
     private Thread updateThread;
-    
-    private boolean stopUpdateThread = false;
-    
-    private long lastStatusUpdate = 0;
-    
-    public GenericRProcess(String wellKnownName) {
-        super(wellKnownName);
 
-        log.debug("NEW {}", this);
+    private boolean stopUpdateThread = false;
+
+    private long lastStatusUpdate = 0;
+
+    public GenericRProcess(String wellKnownName, R_Config config, RDataTypeRegistry dataTypeRegistry, String baseUrl) {
+        super(wellKnownName, false);
+        this.config = config;
+        this.urlGenerator = new ResourceUrlGenerator(baseUrl);
+        iohandler = new RIOHandler(dataTypeRegistry);
+        log.trace("NEW {}", this);
     }
 
+    @Override
+    public ProcessDescription getDescription() {
+        if (description == null) {
+            description = initializeDescription();
+        }
+        return description;
+    }
+
+    public List<RAnnotation> getAnnotations() {
+        return annotations;
+    }
+
+    @Override
     public List<String> getErrors() {
         return this.errors;
     }
 
     @Override
     public Class< ? extends IData> getInputDataType(String id) {
-        return this.iohandler.getInputDataType(id, this.annotations);
+        return iohandler.getInputDataType(id, this.annotations);
     }
 
     @Override
     public Class< ? > getOutputDataType(String id) {
-        return this.iohandler.getOutputDataType(id, this.annotations);
+        return iohandler.getOutputDataType(id, this.annotations);
     }
 
     @Override
-    protected ProcessDescriptionType initializeDescription() {
-        this.config = R_Config.getInstance(); // call here because method is invoked by super constructor
+    protected ProcessDescription initializeDescription() {
+        String wkn = getWellKnownName();
+        log.debug("Load and validate script for wkn {}", wkn);
 
         // Reading process information from script annotations:
-        InputStream rScriptStream = null;
+        File scriptFile = null;
         try {
-            String wkn = getWellKnownName();
-            log.debug("Loading file for {}", wkn);
+            scriptFile = scriptRepo.getValidatedScriptFile(wkn);
+        }
+        catch (InvalidRScriptException e) {
+            log.warn("Could not load script file for {}", wkn, e);
+            throw new IllegalStateException("Error creating process description: " + e.getMessage(), e);
+        }
+        log.debug("Loaded and valid: {}", scriptFile.getAbsolutePath());
 
-            this.scriptFile = config.getScriptFileForWKN(wkn);
-            log.debug("File loaded: {}", this.scriptFile.getAbsolutePath());
-
+        try (InputStream rScriptStream = new FileInputStream(scriptFile);) {
             log.info("Initializing description for {}", this.toString());
-
-            if (this.scriptFile == null) {
-                log.warn("Loaded script file is {}", this.scriptFile);
-                throw new ExceptionReport("Cannot create process description because R script fill is null",
-                                          ExceptionReport.NO_APPLICABLE_CODE);
-            }
-
-            rScriptStream = new FileInputStream(this.scriptFile);
-            if (this.parser == null)
-                this.parser = new RAnnotationParser(this.config); // prevent NullpointerException
             this.annotations = this.parser.parseAnnotationsfromScript(rScriptStream);
 
-            // submits annotation with process informations to
-            // ProcessdescriptionCreator:
-            RProcessDescriptionCreator creator = new RProcessDescriptionCreator(this.config);
-            ProcessDescriptionType doc = creator.createDescribeProcessType(this.annotations,
-                                                                           wkn,
-                                                                           config.getScriptURL(wkn),
-                                                                           config.getSessionInfoURL());
+            // submits annotation with process informations to ProcessdescriptionCreator:
+            RProcessDescriptionCreator creator = new RProcessDescriptionCreator(wkn,
+                                                                                config.isResourceDownloadEnabled(),
+                                                                                config.isImportDownloadEnabled(),
+                                                                                config.isScriptDownloadEnabled(),
+                                                                                config.isSessionInfoLinkEnabled(),
+                                                                                urlGenerator);
+            ProcessDescriptionType doc = creator.createDescribeProcessType(this.annotations, wkn);
 
-            log.debug("Created process description for {}:\n{}", wkn, doc.xmlText());
-            return doc;
-        }
-        catch (RAnnotationException rae) {
-            log.error(rae.getMessage());
-            throw new RuntimeException("Annotation error while parsing process description: " + rae.getMessage(), rae);
-        }
-        catch (IOException ioe) {
-            log.error("I/O error while parsing process description: " + ioe.getMessage());
-            throw new RuntimeException("I/O error while parsing process description: " + ioe.getMessage(), ioe);
-        }
-        catch (ExceptionReport e) {
-            log.error(e.getMessage(), e);
-            throw new RuntimeException("Error creating process description: " + e.getMessage(), e);
-        }
-        finally {
-            try {
-                if (rScriptStream != null)
-                    rScriptStream.close();
+            if (log.isTraceEnabled()) {
+                ProcessDescriptionsDocument outerDoc = ProcessDescriptionsDocument.Factory.newInstance();
+                ProcessDescriptionType type = outerDoc.addNewProcessDescriptions().addNewProcessDescription();
+                type.set(doc);
+                log.trace("Created process description for {}:\n{}", wkn, outerDoc.xmlText());
             }
-            catch (IOException e) {
-                log.error("Error closing script stream.", e);
-            }
+
+            ProcessDescription processDescription = new ProcessDescription();
+            processDescription.addProcessDescriptionForVersion(doc, "1.0.0");
+            description = processDescription;
+            return processDescription;
+        }
+        catch (RAnnotationException | IOException | ExceptionReport e) {
+            log.error("Error initializing description for script '{}'", wkn, e);
+            throw new RuntimeException("Error while parsing script file or creating process description of script '"
+                    + wkn + "': " + e.getMessage(), e);
         }
     }
 
+    @Override
     public Map<String, IData> run(Map<String, List<IData>> inputData) throws ExceptionReport {
         log.info("Running {} \n\tInput data: {}", this.toString(), Arrays.toString(inputData.entrySet().toArray()));
 
@@ -179,10 +198,10 @@ public class GenericRProcess extends AbstractObservableAlgorithm {
                                        "Running algorithm with input "
                                                + Arrays.deepToString(inputData.entrySet().toArray()));
 
-            RSessionManager session = new RSessionManager(rCon, config);
+            RSessionManager session = new RSessionManager(rCon, config, this.urlGenerator);
             session.configureSession(getWellKnownName(), executor);
 
-            RWorkspaceManager workspace = new RWorkspaceManager(rCon, this.iohandler, config);
+            RWorkspaceManager workspace = new RWorkspaceManager(rCon, resourceRepo, iohandler, config);
             String originalWorkDir = workspace.prepareWorkspace(inputData, getWellKnownName());
 
             List<RAnnotation> resAnnotList = RAnnotation.filterAnnotations(this.annotations, RAnnotationType.RESOURCE);
@@ -191,55 +210,80 @@ public class GenericRProcess extends AbstractObservableAlgorithm {
             List<RAnnotation> inAnnotations = RAnnotation.filterAnnotations(this.annotations, RAnnotationType.INPUT);
             workspace.loadInputValues(inputData, inAnnotations);
 
-            if (log.isDebugEnabled())
-                workspace.saveImage("preExecution");
+            List<RAnnotation> importAnnotations = RAnnotation.filterAnnotations(this.annotations,
+                                                                                RAnnotationType.IMPORT);
+            List<File> imports = Lists.newArrayList();
+            for (RAnnotation rAnnotation : importAnnotations) {
+                @SuppressWarnings("unchecked")
+                List<R_Resource> importList = (List<R_Resource>) rAnnotation.getObjectValue(RAttribute.NAMED_LIST);
+                for (R_Resource importedScript : importList) {
+                    String value = importedScript.getResourceValue();
+                    try {
+                        File f = scriptRepo.getImportedFileForWKN(getWellKnownName(), value);
+                        imports.add(f);
+                        log.debug("Got imported file {} based on import resource {}", f, importList);
+                    }
+                    catch (InvalidRScriptException e) {
+                        log.error("Failed resolving imported script for '{}'", getWellKnownName(), e);
+                        throw new ExceptionReport(e.getMessage(), ExceptionReport.NO_APPLICABLE_CODE);
+                    }
+                }
+            }
+            session.loadImportedScripts(executor, imports);
 
-            File scriptFile = config.getScriptFileForWKN(getWellKnownName());
+            if (log.isDebugEnabled()) {
+                workspace.saveImage("preExecution");
+            }
 
             //add simple status logging functionality
             //log status via updateStatus-method to temp file that is created in GenericRProcess class
-            //temp file is read by process if changed and the contents are to the update-method of the ISubject interface      
-            
+            //temp file is read by process if changed and the contents are to the update-method of the ISubject interface
+
             String script = "tmpStatusFile <- tempfile()";
             rCon.voidEval(script);
-            
+
             File tmpStatusFile;
-            
+
             REXP tmpStatusFileREXP = rCon.eval("tmpStatusFile");
-            
+
             if(tmpStatusFileREXP.isString()){
                     try {
                         tmpStatusFile = new File(tmpStatusFileREXP.asString());
-                        
+
                         StringBuilder statusScriptString = new StringBuilder();
-                        
+
                         statusScriptString.append("writelock = function() {\n  ");
                         statusScriptString.append("file.create(paste0(tmpStatusFile, \"" + R_Config.LOCK_SUFFIX + "\"))\n");
                         statusScriptString.append("}\n  ");
-                        
+
                         statusScriptString.append("removelock = function(i) {\n  ");
                         statusScriptString.append("file.remove(paste0(tmpStatusFile, \"" + R_Config.LOCK_SUFFIX + "\"))\n");
                         statusScriptString.append("}\n  ");
-                        
+
                         statusScriptString.append("updateStatus = function(i) {\n  ");
                         statusScriptString.append("writelock()\n  ");
                         statusScriptString.append("write(as.character(i),file=tmpStatusFile,append=F)\n");
                         statusScriptString.append("removelock()\n");
                         statusScriptString.append("}\n  ");
-                        
+
                         rCon.voidEval(statusScriptString.toString());
-                        
+
                         tmpStatusFile.createNewFile();
-                        
+
                         startUpdateListener(tmpStatusFile);
-                        
+
                     } catch (REXPMismatchException e) {
                         log.debug("Could not parse String generated by R method tempfile() to Java File. No status updates are possible.", e);
                     }
-            } 
-            
-            HashMap<String, IData> result = null;
+            }
+
+            File scriptFile = scriptRepo.getScriptFile(getWellKnownName());
             boolean success = executor.executeScript(scriptFile, rCon);
+            if (log.isDebugEnabled()) {
+                workspace.saveImage("afterExecution");
+            }
+
+            HashMap<String, IData> result = null;
             if (success) {
                 List<RAnnotation> outAnnotations = RAnnotation.filterAnnotations(this.annotations,
                                                                                  RAnnotationType.OUTPUT);
@@ -252,8 +296,6 @@ public class GenericRProcess extends AbstractObservableAlgorithm {
                 throw new ExceptionReport(msg, getClass().getName());
             }
 
-            if (log.isDebugEnabled())
-                workspace.saveImage("afterExecution");
             log.debug("RESULT: " + Arrays.toString(result.entrySet().toArray()));
 
             session.cleanUp();
@@ -262,7 +304,7 @@ public class GenericRProcess extends AbstractObservableAlgorithm {
 
             return result;
         }
-        catch (IOException e) {
+        catch (IOException | RuntimeException e) {
             String message = "Attempt to run R script file failed:\n" + e.getClass() + " - " + e.getLocalizedMessage()
                     + "\n" + e.getCause();
             log.error(message, e);
@@ -300,10 +342,11 @@ public class GenericRProcess extends AbstractObservableAlgorithm {
                         throw new ExceptionReport(message, "R", "R_Connection", e);
                     }
                 }
-                else
+                else {
                     rCon.close();
+                }
             }
-            
+
             if(updateThread != null && updateThread.isAlive()){
                 stopUpdateThread = true;
             }
@@ -313,8 +356,12 @@ public class GenericRProcess extends AbstractObservableAlgorithm {
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
-        sb.append("GenericRProcess [script = ");
-        sb.append(this.scriptFile);
+        sb.append("GenericRProcess [wkn = ");
+        sb.append(this.wkName);
+        if (scriptRepo != null) {
+            sb.append(", script file = ");
+            sb.append(scriptRepo.getScriptFileName(this.wkName));
+        }
         if (this.annotations != null) {
             sb.append(", annotations = ");
             sb.append(Arrays.toString(this.annotations.toArray()));
@@ -324,86 +371,86 @@ public class GenericRProcess extends AbstractObservableAlgorithm {
     }
 
     private void startUpdateListener(final File tmpStatusFile){
-        
+
         updateThread = new Thread("WPS4R-update-thread"){
-          
+
             @Override
             public void run() {
-                
-                while(true){                    
+
+                while(true){
                     if(stopUpdateThread){
                         break;
                     }
-                    
+
                     try {
                         sleep(1000);
                     } catch (InterruptedException e) {
                         log.error("InterruptedException while trying to sleep WPS4R-update-thread.", e);
                     }
-                    
+
                     //lock exists continue
                     if(new File(tmpStatusFile.getAbsolutePath().concat(R_Config.LOCK_SUFFIX)).exists()){
                         continue;
                     }
-                    
+
                     try {
                         String updateMessage = readTmpStatusFile(tmpStatusFile);
-                        
+
                         if(updateMessage == null || updateMessage.isEmpty()){
                             continue;
                         }
-                        
+
                         //try parsing status as integer and update process status if successful
                         try{
-                            
+
                             Integer percentage = Integer.parseInt(updateMessage.trim());
-                            
+
                             update(percentage);
-                            
+
                         }catch(NumberFormatException e){
                             log.info("Status could not be parsed to integer: " + updateMessage);
-                            
+
                             //update status with message (works only for WPS 1.0)
                             update(updateMessage);
                         }
-                        
+
                     } catch (IOException e) {
                         log.error("Could not read status from file: " + tmpStatusFile.getAbsolutePath(), e);
                     }
-                                        
+
                 }
-                
+
             }
-            
+
         };
-        
+
         updateThread.start();
     }
-    
+
     private String readTmpStatusFile(File tmpStatusFile) throws IOException{
-        
+
         String content = "";
-        
+
         long statusFileModified = tmpStatusFile.lastModified();
-               
+
         log.debug("File modified: " + (statusFileModified > lastStatusUpdate));
-        
+
         if(lastStatusUpdate == 0 || statusFileModified > lastStatusUpdate){
-            
+
             BufferedReader bufferedReader = new BufferedReader(new FileReader(tmpStatusFile));
-            
+
             String line = "";
-            
+
             while((line = bufferedReader.readLine()) != null){
                 content = content.concat(line + "\n");
             }
-            
+
             bufferedReader.close();
-            
-            lastStatusUpdate = statusFileModified;            
+
+            lastStatusUpdate = statusFileModified;
         }
-        
+
         return content;
     }
-    
+
 }

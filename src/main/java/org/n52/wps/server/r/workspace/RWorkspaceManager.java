@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -43,12 +43,14 @@ import java.util.Set;
 import org.n52.wps.io.data.IData;
 import org.n52.wps.server.ExceptionReport;
 import org.n52.wps.server.r.FilteredRConnection;
-import org.n52.wps.server.r.RWPSConfigVariables;
+import org.n52.wps.server.r.RConstants;
 import org.n52.wps.server.r.RWPSSessionVariables;
 import org.n52.wps.server.r.R_Config;
+import org.n52.wps.server.r.ResourceFileRepository;
 import org.n52.wps.server.r.data.R_Resource;
 import org.n52.wps.server.r.syntax.RAnnotation;
 import org.n52.wps.server.r.syntax.RAnnotationException;
+import org.n52.wps.server.r.syntax.RAnnotationType;
 import org.n52.wps.server.r.syntax.RAttribute;
 import org.n52.wps.server.r.util.RExecutor;
 import org.n52.wps.server.r.util.RLogger;
@@ -60,15 +62,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 
+ *
  * @author Daniel Nüst
- * 
+ *
  */
 public class RWorkspaceManager {
 
     private static Logger log = LoggerFactory.getLogger(RWorkspaceManager.class);
-
-    private static final String RDATA_FILE_EXTENSION = "RData";
 
     private R_Config config;
 
@@ -85,9 +85,15 @@ public class RWorkspaceManager {
 
     private RWorkspace workspace;
 
-    public RWorkspaceManager(FilteredRConnection connection, RIOHandler iohandler, R_Config config) {
+    private ResourceFileRepository resourceRepo;
+
+    public RWorkspaceManager(FilteredRConnection connection,
+                             ResourceFileRepository resourceRepo,
+                             RIOHandler iohandler,
+                             R_Config config) {
         this.connection = connection;
-        this.workspace = new RWorkspace();
+        this.resourceRepo = resourceRepo;
+        this.workspace = new RWorkspace(config.getBaseDir());
         this.executor = new RExecutor();
         this.iohandler = iohandler;
         this.config = config;
@@ -96,7 +102,7 @@ public class RWorkspaceManager {
     }
 
     /**
-     * 
+     *
      * @param originalWorkDir
      *        the working directory of R after the clean up is finished
      */
@@ -114,8 +120,9 @@ public class RWorkspaceManager {
 
         log.debug("Deleting work directory {}", originalWorkDir);
         boolean b = this.workspace.deleteCurrentAndSetWorkdir(this.connection, originalWorkDir);
-        if ( !b)
+        if ( !b) {
             log.debug("Could not delete workdir (completely) with R, remaining files: {}", this.workspace.listFiles());
+        }
     }
 
     public void cleanUpWithWPS() {
@@ -126,24 +133,26 @@ public class RWorkspaceManager {
                 // try to delete current local workdir - folder
                 File workdir = new File(workspace.getPath());
 
-                if ( !workdir.exists())
+                if ( !workdir.exists()) {
                     return;
+                }
 
                 boolean deleted = deleteRecursive(workdir);
-                if ( !deleted)
+                if ( !deleted) {
                     log.warn("Failed to delete temporary WPS Workdirectory '{}', remaining files: {}",
                              workdir.getAbsolutePath(),
                              this.workspace.listFiles());
+                }
             }
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             log.error("Problem deleting the wps work directory.", e);
         }
     }
 
     /**
      * Deletes File or Directory completely with its content
-     * 
+     *
      * @param in
      *        File or directory
      * @return true if all content could be deleted
@@ -195,19 +204,7 @@ public class RWorkspaceManager {
 
                 inputValuesWithValues.add(entry.getKey());
             }
-            catch (RserveException e) {
-                log.error("Error parsing input value {}", entry, e);
-                throw new ExceptionReport("Error parsing input value: " + entry,
-                                          ExceptionReport.INVALID_PARAMETER_VALUE,
-                                          e);
-            }
-            catch (REXPMismatchException e) {
-                log.error("Error parsing input value {}", entry, e);
-                throw new ExceptionReport("Error parsing input value: " + entry,
-                                          ExceptionReport.INVALID_PARAMETER_VALUE,
-                                          e);
-            }
-            catch (IOException e) {
+            catch (RserveException | REXPMismatchException | IOException e) {
                 log.error("Error parsing input value {}", entry, e);
                 throw new ExceptionReport("Error parsing input value: " + entry,
                                           ExceptionReport.INVALID_PARAMETER_VALUE,
@@ -277,11 +274,18 @@ public class RWorkspaceManager {
         log.debug("Saving resources in session: {}", resources);
 
         String wpsScriptResources = null;
-        // Assign and concatenate lists of resources given by the ressource annotations
+
+        // Assign and concatenate list of resources given by the ressource annotations
         wpsScriptResources = "list()";
+        // empty list:
         connection.filteredEval(RWPSSessionVariables.SCRIPT_RESOURCES + " <- " + wpsScriptResources);
         for (RAnnotation annotation : resources) {
+            if ( !annotation.getType().equals(RAnnotationType.RESOURCE)) { // skip non-resource annoations
+                continue;
+            }
+
             wpsScriptResources = annotation.getStringValue(RAttribute.NAMED_LIST_R_SYNTAX);
+            // concatenate:
             connection.filteredEval(RWPSSessionVariables.SCRIPT_RESOURCES + " <- " + "append("
                     + RWPSSessionVariables.SCRIPT_RESOURCES + ", " + wpsScriptResources + ")");
         }
@@ -301,8 +305,9 @@ public class RWorkspaceManager {
             Object resObject = resourceAnnotation.getObjectValue(RAttribute.NAMED_LIST);
             Collection< ? > resourceCollection;
 
-            if (resObject instanceof Collection< ? >)
+            if (resObject instanceof Collection< ? >) {
                 resourceCollection = (Collection< ? >) resObject;
+            }
             else {
                 log.warn("Unsupported resource object: {}", resObject);
                 continue;
@@ -310,18 +315,21 @@ public class RWorkspaceManager {
 
             for (Object element : resourceCollection) {
                 R_Resource resource;
-                if (element instanceof R_Resource)
+                if (element instanceof R_Resource) {
                     resource = (R_Resource) element;
+                }
                 else {
                     log.warn("Unsupported resource element: {}", element);
                     continue;
                 }
 
-                File resourceFile = resource.getFullResourcePath(this.config);
+                // File resourceFile = resource.getFullResourcePath(this.config);
+                File resourceFile = resourceRepo.getResource(resource).toFile();
                 if (resourceFile == null || !resourceFile.exists()) {
                     throw new ExceptionReport("Resource does not exist: " + resourceAnnotation,
                                               ExceptionReport.NO_APPLICABLE_CODE);
                 }
+
                 log.debug("Loading resource {} from file {} (directory: {})",
                           resource,
                           resourceFile,
@@ -333,8 +341,17 @@ public class RWorkspaceManager {
         log.debug("Loaded resources, workspace files: {}", this.workspace.listFiles());
     }
 
+
     /**
+     * @param inputData a map containing the input data for this process execution
+     * @param processWKN the well known name of the process
      * @return the original work directory or the R session
+     * @throws RserveException if an exception occurred while preparing the workspace
+     * @throws REXPMismatchException if an exception occurred while preparing the workspace
+     * @throws ExceptionReport if an exception occurred while preparing the workspace
+     * @throws FileNotFoundException if an exception occurred while preparing the workspace
+     * @throws IOException if an exception occurred while preparing the workspace
+     * @throws RAnnotationException if an exception occurred while preparing the workspace
      */
     public String prepareWorkspace(Map<String, List<IData>> inputData, String processWKN) throws RserveException,
             REXPMismatchException,
@@ -351,16 +368,15 @@ public class RWorkspaceManager {
         String originalWD = connection.eval("getwd()").asString();
 
         // Set R working directory according to configuration
-        String strategy = this.config.getConfigVariable(RWPSConfigVariables.R_WORK_DIR_STRATEGY);
+        String strategy = config.getConfigModule().getWdStrategy();
         boolean isRserveOnLocalhost = this.config.getRServeHost().equalsIgnoreCase("localhost");
         String workDirNameSetting = null;
 
         try {
-            workDirNameSetting = this.config.getConfigVariableFullPath(RWPSConfigVariables.R_WORK_DIR_NAME);
+            workDirNameSetting = config.resolveFullPath(config.getConfigModule().getWdName());
         }
         catch (ExceptionReport e) {
-            log.error("The config variable {} references a non-existing directory. This will be an issue if the variable is used. The current strategy is '{}'.",
-                      RWPSConfigVariables.R_WORK_DIR_NAME,
+            log.warn("R Working directory does not exist. This will be an issue if the variable is used. The current strategy is '{}'.",
                       strategy,
                       e);
         }
@@ -376,9 +392,12 @@ public class RWorkspaceManager {
 
     /**
      * saves an image to the working directory that may help debugging R scripts
+     *
+     * @param name the name of the image
+     * @return true, if the image was saved, otherwise false
      */
     public boolean saveImage(String name) {
-        String filename = name + "." + RDATA_FILE_EXTENSION;
+        String filename = name + "." + RConstants.RDATA_FILE_EXTENSION;
         try {
             REXP result = connection.eval("save.image(file=\"" + filename + "\")");
             log.debug("Saved image to {} with result {}", filename, result);
@@ -390,9 +409,12 @@ public class RWorkspaceManager {
         }
     }
 
+
     /**
+     * @param outAnnotations the output annotations
      * @return the result has including sessionInfo() and warnings()
-     * @throws REXPMismatchException
+     * @throws ExceptionReport if an exception occurred while saving the output values
+     * @throws RAnnotationException if an exception occurred while saving the output values
      */
     public HashMap<String, IData> saveOutputValues(Collection<RAnnotation> outAnnotations) throws RAnnotationException,
             ExceptionReport {
@@ -425,16 +447,7 @@ public class RWorkspaceManager {
 
                 log.debug("Output for {} is {} with payload {}", resultId, output, output.getPayload());
             }
-            catch (ExceptionReport e) {
-                throw e;
-            }
-            catch (RserveException e) {
-                log.error("Could not create output for {}", resultId, e);
-            }
-            catch (IOException e) {
-                log.error("Could not create output for {}", resultId, e);
-            }
-            catch (REXPMismatchException e) {
+            catch (RserveException | IOException | REXPMismatchException e) {
                 log.error("Could not create output for {}", resultId, e);
             }
         }

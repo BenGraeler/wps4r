@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -33,8 +33,10 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
+import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 
 import org.n52.wps.io.data.GenericFileData;
@@ -42,13 +44,13 @@ import org.n52.wps.io.data.GenericFileDataConstants;
 import org.n52.wps.io.data.IData;
 import org.n52.wps.io.data.binding.complex.GenericFileDataBinding;
 import org.n52.wps.server.ExceptionReport;
-import org.n52.wps.server.r.RWPSConfigVariables;
 import org.n52.wps.server.r.RWPSSessionVariables;
 import org.n52.wps.server.r.R_Config;
+import org.n52.wps.server.r.data.R_Resource;
 import org.n52.wps.server.r.syntax.RAnnotationException;
 import org.n52.wps.server.r.util.RExecutor;
-import org.n52.wps.server.r.util.RFileExtensionFilter;
 import org.n52.wps.server.r.util.RLogger;
+import org.n52.wps.server.r.util.ResourceUrlGenerator;
 import org.rosuda.REngine.REXP;
 import org.rosuda.REngine.REXPMismatchException;
 import org.rosuda.REngine.Rserve.RConnection;
@@ -66,15 +68,18 @@ public class RSessionManager {
 
     private static final String WARNING_OUTPUT_NAME = "warnings";
 
-    private R_Config config;
+    private final R_Config config;
 
-    private RConnection connection;
+    private final RConnection connection;
 
-    private boolean cleanOnStartup = true;
+    private final boolean cleanOnStartup = true;
 
-    public RSessionManager(RConnection rCon, R_Config config) {
+    private final ResourceUrlGenerator urlGenerator;
+
+    public RSessionManager(RConnection rCon, R_Config config, ResourceUrlGenerator urlGenerator) {
         this.connection = rCon;
         this.config = config;
+        this.urlGenerator = urlGenerator;
 
         log.debug("NEW {}", this);
     }
@@ -112,7 +117,7 @@ public class RSessionManager {
         // configure memory limit
         StringBuilder cmd = new StringBuilder();
 
-        String memoryLimit = config.getConfigVariable(RWPSConfigVariables.R_SESSION_MEMORY_LIMIT);
+        String memoryLimit = config.getConfigModule().getSessionMemoryLimit();
         cmd.append("memory.limit(");
         cmd.append(memoryLimit);
         cmd.append(")");
@@ -133,7 +138,7 @@ public class RSessionManager {
         loadUtilityScripts(executor);
     }
 
-    public String getConsoleOutput(String cmd) throws RserveException, REXPMismatchException {
+    private String getConsoleOutput(String cmd) throws RserveException, REXPMismatchException {
         return this.connection.eval("paste(capture.output(print(" + cmd + ")), collapse='\\n')").asString();
     }
 
@@ -152,9 +157,15 @@ public class RSessionManager {
             ExceptionReport {
         log.debug("Loading utility scripts.");
 
-        File[] utils = new File(config.utilsDirFull).listFiles(new RFileExtensionFilter());
+        Collection<File> utils = config.getUtilsFiles();
+        log.debug("Loading {} utils files: {}", utils.size(), Arrays.toString(utils.toArray()));
         for (File file : utils) {
-            executor.executeScript(file, this.connection);
+            if (file.exists()) {
+                executor.executeScript(file, this.connection);
+            }
+            else {
+                log.warn("Configured script file does not longer exist: {}", file);
+            }
         }
 
         RLogger.log(connection, "workspace content after loading utility scripts:");
@@ -176,21 +187,21 @@ public class RSessionManager {
             connection.eval(cmd);
             RLogger.logVariable(connection, RWPSSessionVariables.WPS_SERVER_NAME);
 
-            String resourceUrl = config.getResourceDirURL();
-            connection.assign(RWPSSessionVariables.RESOURCE_URL_NAME, resourceUrl);
-            log.debug("Assigned resource directory to variable '{}': {}",
-                      RWPSSessionVariables.RESOURCE_URL_NAME,
-                      resourceUrl);
-            RLogger.logVariable(connection, RWPSSessionVariables.RESOURCE_URL_NAME);
+            String resourceUrl = urlGenerator.getResourceURL(new R_Resource(processWKN, "", true)).toExternalForm();
+            assignAndLog(RWPSSessionVariables.RESOURCES_ENDPOINT, resourceUrl);
+
+            String scriptUrl;
+            try {
+                scriptUrl = urlGenerator.getScriptURL(processWKN).toExternalForm();
+            }
+            catch (MalformedURLException e) {
+                log.warn("Could not retrieve script URL", e);
+                scriptUrl = "N/A";
+            }
+            assignAndLog(RWPSSessionVariables.SCRIPT_URL, scriptUrl);
 
             URL processDescription = config.getProcessDescriptionURL(processWKN);
-
-            connection.assign(RWPSSessionVariables.PROCESS_DESCRIPTION, processDescription.toString());
-            RLogger.logVariable(connection, RWPSSessionVariables.PROCESS_DESCRIPTION);
-
-            log.debug("Assigned process description to variable '{}': {}",
-                      RWPSSessionVariables.PROCESS_DESCRIPTION,
-                      processDescription);
+            assignAndLog(RWPSSessionVariables.PROCESS_DESCRIPTION, processDescription.toString());
 
             // create session variable for warning storage
             cmd = RWPSSessionVariables.WARNING_OUTPUT_STORAGE + " = c()";
@@ -208,9 +219,15 @@ public class RSessionManager {
         }
     }
 
+    private void assignAndLog(String name, String value) throws RserveException {
+        connection.assign(name, value);
+        RLogger.logVariable(connection, name);
+        log.debug("Assigned process description to variable '{}': {}", name, value);
+    }
+
     /**
      * Retrieves warnings that occured during the last execution of a script
-     * 
+     *
      * Note that the warnings()-method is not reliable for Rserve because it does not return warnings in most
      * cases. Therefore a specific warnings function is used to retrieve the warnings.
      */
@@ -231,8 +248,9 @@ public class RSessionManager {
             }
         }
 
-        if (warnings.length() < 1)
+        if (warnings.length() < 1) {
             return NO_WARNINGS_MESSAGE;
+        }
         return warnings.toString();
     }
 
@@ -252,20 +270,30 @@ public class RSessionManager {
                                                                       GenericFileDataConstants.MIME_TYPE_PLAIN_TEXT)));
             warningsStream.close();
         }
-        catch (UnsupportedEncodingException e) {
-            log.error("Could not save session info and warnings.", e);
-        }
-        catch (IOException e) {
-            log.error("Could not save session info and warnings.", e);
-        }
-        catch (REXPMismatchException e) {
-            log.error("Could not save session info and warnings.", e);
-        }
-        catch (RserveException e) {
+        catch (IOException | REXPMismatchException | RserveException e) {
             log.error("Could not save session info and warnings.", e);
         }
 
         return result;
+    }
+
+    public void loadImportedScripts(RExecutor executor, Collection<File> imports) throws RserveException,
+            IOException,
+            RAnnotationException,
+            ExceptionReport {
+        log.debug("Loading {} imports: {}", imports.size(), Arrays.toString(imports.toArray()));
+
+        for (File file : imports) {
+            if (file.exists()) {
+                executor.executeScript(file, this.connection);
+            }
+            else {
+                log.warn("Imported script does not exist: {}", file);
+            }
+        }
+
+        RLogger.log(connection, "workspace content after loading imports:");
+        RLogger.logSessionContent(connection);
     }
 
 }

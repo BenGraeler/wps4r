@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -31,6 +31,7 @@ package org.n52.wps.server.r.workspace;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,7 +41,6 @@ import java.util.UUID;
 
 import org.n52.wps.server.ExceptionReport;
 import org.n52.wps.server.r.FilteredRConnection;
-import org.n52.wps.server.r.RWPSConfigVariables;
 import org.n52.wps.server.r.util.RLogger;
 import org.rosuda.REngine.REXP;
 import org.rosuda.REngine.REXPMismatchException;
@@ -50,11 +50,16 @@ import org.rosuda.REngine.Rserve.RserveException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * @author bpr
+ *
+ */
 public class RWorkspace {
 
     public enum CreationStrategy {
         DEFAULT, MANUAL, MANUALBASEDIR, PRESET, TEMPORARY;
 
+        @Override
         public String toString() {
             return this.name().toLowerCase();
         }
@@ -97,6 +102,12 @@ public class RWorkspace {
 
     private boolean wpsWorkDirIsRWorkDir = true;
 
+    private Path basedir;
+
+    public RWorkspace(Path basedir) {
+        this.basedir = basedir;
+    }
+
     private REXP createAndSetNewWorkspaceDirectory(File directory, RConnection connection) throws RserveException {
         boolean b = directory.mkdir();
         if (b) {
@@ -104,10 +115,8 @@ public class RWorkspace {
             String wd = directory.getAbsolutePath();
             return setwd(connection, wd);
         }
-        else {
-            log.error("Could not create new temp workspace directory at {}", directory);
-            return null;
-        }
+        log.error("Could not create new temp workspace directory at {}", directory);
+        return null;
     }
 
     private REXP createAndSetNewWorkspaceDirectoryInRTempdir(RConnection connection) throws RserveException {
@@ -133,8 +142,11 @@ public class RWorkspace {
         return createAndSetNewWorkspaceDirectory(newDir, connection);
     }
 
+
     /**
-     * @return true if the unlink call was made successfully
+     * @param connection the <code>RConnection</code>
+     * @param originalWorkDir the original working directory
+     * @return  true if the unlink call was made successfully
      */
     public boolean deleteCurrentAndSetWorkdir(RConnection connection, String originalWorkDir) {
         if (this.wpsWorkDirIsRWorkDir && !connection.isConnected()) {
@@ -166,15 +178,17 @@ public class RWorkspace {
                         REXP eval = connection.eval("(unlink(\"" + wdToDelete + "\", recursive=TRUE))");
 
                         int result = eval.asInteger();
-                        if (result == 0)
+                        if (result == 0) {
                             return true;
+                        }
                         return false;
                     }
-                    else
-                        this.temporarilyPreventingRWorkingDirectoryFromDelete = false;
+
+                    this.temporarilyPreventingRWorkingDirectoryFromDelete = false;
                 }
-                else
+                else {
                     log.warn("Unexpected R workdirectory at end of R session, check the R sript for unwanted workdirectory changes.");
+                }
             }
             catch (RserveException e) {
                 log.error("Could not reset the work directory.", e);
@@ -204,15 +218,21 @@ public class RWorkspace {
     /**
      * Sets the R working directory according to the "R_Work_Dir" configuration parameter. 4 cases are
      * supported: 'default', 'preset', 'temporary' and 'custom'.
-     * 
+     *
      * Do not confuse the R working directory with the temporary WPS working directory (this.currentworkdir)!
      * R and WPS use the same directory under default configuration, with Rserve on localhost, but running R
      * on a remote machine requires separate working directories for WPS and R.
-     * 
-     * @param connection
-     * @param workDirName
-     * 
+     *
+     * @param connection the <code>RConnection</code>
+     * @param currentWorkDir the current working directory
+     * @param strategyName the name of the strategy to use
+     * @param isRserveOnLocalhost indicates, whether Rserve runs on localhost
+     * @param workDirName the name of the working directory
+     *
      * @return the new working directory, which is already set.
+     * @throws REXPMismatchException if an exception occurred while setting up the working directory
+     * @throws ExceptionReport if an exception occurred while setting up the working directory
+     * @throws RserveException if an exception occurred while setting up the working directory
      */
     public String setWorkingDirectory(RConnection connection,
                                       String currentWorkDir,
@@ -222,19 +242,47 @@ public class RWorkspace {
             RserveException,
             ExceptionReport {
         log.debug("Setting the R working directory... current work directory: {}", currentWorkDir);
-
-        log.debug("Try to set R work directory according to {} = {}",
-                  RWPSConfigVariables.R_WORK_DIR_STRATEGY,
-                  strategyName);
+        log.debug("Try to set R work directory according to strategy '{}'", strategyName);
         REXP oldWorkdir = null;
         log.debug("Working on localhost: {}", isRserveOnLocalhost);
 
+        CreationStrategy strategy = null;
         if (strategyName == null || strategyName.equals("")) {
-            log.error("Strategy is not defined: {}. Returning current work directory.", strategyName);
-            return currentWorkDir;
+            log.error("Strategy is not defined: {}. Falling back to default: {}", DEFAULT_STRATEGY);
+            strategy = DEFAULT_STRATEGY;
+        }
+        else {
+            strategy = CreationStrategy.valueOf(strategyName.trim().toUpperCase());
         }
 
-        CreationStrategy strategy = CreationStrategy.valueOf(strategyName.trim().toUpperCase());
+
+        // if one of these strategies is used, then Java must be able to write in the folder and we need the
+        // full path
+        String workDirNameFullPath = null;
+        if (strategy.equals(CreationStrategy.MANUALBASEDIR) || strategy.equals(CreationStrategy.MANUAL)) {
+            try {
+                if (workDirName == null) {
+                    throw new ExceptionReport("Error setting working directory with strategy '" + strategy +  "': workDirName is 'null'!", "Inconsistent property");
+                }
+
+                File testFile = new File(workDirName);
+                if ( !testFile.isAbsolute()) {
+                    testFile = basedir.resolve(path).toFile();
+                }
+                if ( !testFile.exists()) {
+                    throw new ExceptionReport("Invalid work dir name \"" + workDirName + "\" and full path \""
+                            + testFile.getPath() + "\". It denotes a non-existent path.", "Inconsistent property");
+                }
+
+                workDirNameFullPath = testFile.getAbsolutePath();
+                log.debug("Manually set work dir name resolved to the full path '{}'", workDirNameFullPath);
+            }
+            catch (ExceptionReport e) {
+                log.error("Configured R working directory references a non-existing directory. This will be an issue if the variable is used. The current strategy is '{}'.",
+                          strategy,
+                          e);
+            }
+        }
 
         if (strategy.equals(DEFAULT_STRATEGY)) {
             // Default behaviour: R work directory is the same as temporary WPS work directory if R runs
@@ -277,8 +325,9 @@ public class RWorkspace {
         }
         else if (strategy.equals(CreationStrategy.MANUAL)) {
             // in the manual strategy, the path is simply used
-            if (workDirName != null && !workDirName.isEmpty())
+            if (workDirName != null && !workDirName.isEmpty()) {
                 oldWorkdir = setwd(connection, workDirName);
+            }
             else {
                 log.error("Work directory name is not provided, falling back to default strategy.");
                 return setWorkingDirectory(connection,
@@ -298,9 +347,9 @@ public class RWorkspace {
                 if (f.isDirectory()) {
                     oldWorkdir = createAndSetNewWorkspaceDirectoyInBasePath(f, connection);
                 }
-                else
+                else {
                     isInvalidPath = true;
-
+                }
             }
             else {
                 this.wpsWorkDirIsRWorkDir = false;
@@ -308,15 +357,14 @@ public class RWorkspace {
                 if (isExistingDir) {
                     oldWorkdir = createAndSetNewWorkspaceDirectoyInBasePath(f, connection);
                 }
-                else
+                else {
                     isInvalidPath = true;
+                }
             }
 
             if (isInvalidPath) {
-                log.error("Invalid configurarion for work directory. | {}={} | {}={} | Falling back to '{}'.",
-                          RWPSConfigVariables.R_WORK_DIR_STRATEGY,
+                log.error("Invalid configuration for R working directory. | strategy={} | workingDir={} | Falling back to '{}'.",
                           strategy,
-                          RWPSConfigVariables.R_WORK_DIR_NAME,
                           workDirName,
                           DEFAULT_STRATEGY);
                 return setWorkingDirectory(connection,
@@ -345,33 +393,36 @@ public class RWorkspace {
     }
 
     public Collection<File> listFiles() {
-        File f = new File(this.path);
-        ArrayList<File> files = new ArrayList<File>(Arrays.asList(f.listFiles()));
+        ArrayList<File> files = new ArrayList<File>();
+        if (this.path != null) {
+            File f = new File(this.path);
+            files.addAll(Arrays.asList(f.listFiles()));
+        }
+        else {
+            log.error("The path to the workspace is null, cannot create file list");
+        }
         return files;
     }
 
     @Override
     public String toString() {
         StringBuilder builder = new StringBuilder();
-        builder.append("RWorkspace [");
+        builder.append("RWorkspace [deleteRWorkDirectory=").append(deleteRWorkDirectory).append(", ");
         if (path != null) {
-            builder.append("path=");
-            builder.append(path);
-            builder.append(", ");
+            builder.append("path=").append(path).append(", ");
         }
-        builder.append("deleteRWorkDirectory=");
-        builder.append(deleteRWorkDirectory);
-        builder.append(", temporarilyPreventingRWorkingDirectoryFromDelete=");
-        builder.append(temporarilyPreventingRWorkingDirectoryFromDelete);
-        builder.append(", wpsWorkDirIsRWorkDir=");
-        builder.append(wpsWorkDirIsRWorkDir);
+        builder.append("temporarilyPreventingRWorkingDirectoryFromDelete=").append(temporarilyPreventingRWorkingDirectoryFromDelete).append(", wpsWorkDirIsRWorkDir=").append(wpsWorkDirIsRWorkDir).append(", ");
+        if (basedir != null) {
+            builder.append("basedir=").append(basedir);
+        }
         builder.append("]");
         return builder.toString();
     }
 
     public synchronized void createDirectory(String name, RConnection connection) throws RserveException {
-        if (name.equals(ROOT))
+        if (name.equals(ROOT)) {
             return;
+        }
 
         log.debug("Creating directory {} in workspace {}", name, this);
 
@@ -427,12 +478,12 @@ public class RWorkspace {
     }
 
     /**
-     * 
-     * @param source
+     *
+     * @param source the source file
      * @param name
      *        can be a path (starting with '.'), but all intermediate folders must exist
-     * @param connection
-     * @throws IOException
+     * @param connection the <code>FilteredRConnection</code>
+     * @throws IOException if an exception occurred while trying to copy the file
      */
     public void copyFile(File source, String name, FilteredRConnection connection) throws IOException {
         // use RFileOutputStream so that remote RServe is supported

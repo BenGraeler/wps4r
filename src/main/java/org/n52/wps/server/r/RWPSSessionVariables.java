@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -29,29 +29,31 @@
 package org.n52.wps.server.r;
 
 /**
- * 
+ *
  * names of the variables that are put into the R session prior to execution of a script.
- * 
+ *
  * TODO: create a complex object called "wps" with the slots processDescriptionLink, serverRuntime (52N WPS
  * build version), serverName, resourceBaseUrl, scriptBaseUrl, ...
- * 
- * @author Daniel
- * 
+ *
+ * @author Daniel Nüst
+ *
  */
 public class RWPSSessionVariables {
 
     public static final String PROCESS_DESCRIPTION = "wpsProcessDescription";
 
     public static final String WPS_SERVER = "wpsServer";
-    
+
     public static final String WPS_SERVER_NAME = "wpsServerName";
 
     public static final String ERROR_MESSAGE = "wpsErrorMessage";
 
-    public static String RESOURCE_URL_NAME = "wpsResourceURL";
+    public static final String RESOURCES_ENDPOINT = "wpsResourceEndpoint";
 
-    public static String SCRIPT_RESOURCES = "wpsScriptResources";
+    public static final String SCRIPT_URL = "wpsScriptUrl";
 
-    public static String WARNING_OUTPUT_STORAGE = "wpsWarningStorage";
+    public static final String SCRIPT_RESOURCES = "wpsScriptResources";
+
+    public static final String WARNING_OUTPUT_STORAGE = "wpsWarningStorage";
 
 }

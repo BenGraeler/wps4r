@@ -1,5 +1,5 @@
-/**
- * ﻿Copyright (C) 2010 - 2016 52°North Initiative for Geospatial Open Source
+/*
+ * Copyright (C) 2010-2017 52°North Initiative for Geospatial Open Source
  * Software GmbH
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -33,13 +33,16 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.StringTokenizer;
+import javax.annotation.PostConstruct;
 
 import org.n52.wps.server.ExceptionReport;
-import org.n52.wps.server.r.RWPSConfigVariables;
 import org.n52.wps.server.r.R_Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
+@Component
 public class CustomDataTypeManager {
 
     private static final String COMMENT_CHARACTER = "#";
@@ -48,87 +51,80 @@ public class CustomDataTypeManager {
 
     private File configFile;
 
-    private static CustomDataTypeManager instance;
-
     private static final String HINT_FILE = "file";
 
-    private CustomDataTypeManager() {
+    @Autowired
+    private R_Config config;
 
+    @Autowired
+    private RDataTypeRegistry datatypeRegistry;
+
+    public CustomDataTypeManager() {
+        LOGGER.info("NEW {}", this);
     }
 
-    // Call by RPropertyChangeManager and eventually after config file was
-    // changed
-    public void update()
-    {
+    @PostConstruct
+    public void update() {
         try {
-            readConfig();
-        } catch (IOException e) {
+            addCustomDataTypesFromConfigFile();
+            datatypeRegistry.logDataTypeTable();
+        }
+        catch (IOException e) {
             LOGGER.error("Invalid r config file. Costum R data types cannot be registered.", e);
-            RDataTypeRegistry.getInstance().clearCustomDataTypes();
-        } catch (ExceptionReport e) {
+            datatypeRegistry.clearCustomDataTypes();
+        }
+        catch (ExceptionReport e) {
             LOGGER.error("Failed to retrieve r config file. Costum R data types cannot be registered.", e);
-            RDataTypeRegistry.getInstance().clearCustomDataTypes();
+            datatypeRegistry.clearCustomDataTypes();
         }
     }
 
-    private void readConfig() throws IOException, ExceptionReport
-    {
-        this.configFile = new File(R_Config.getInstance().getConfigVariableFullPath(RWPSConfigVariables.R_DATATYPE_CONFIG));
+    private void addCustomDataTypesFromConfigFile() throws IOException, ExceptionReport {
+        String file = config.resolveFullPath(config.getConfigModule().getDatatypeConfig());
+        this.configFile = new File(file);
         if (getConfigFile() == null) {
-            LOGGER.error("Config file not availailable. Costum R data types cannot be registered.");
+            LOGGER.error("Config file not availailable at '{}'. Costum R data types cannot be registered.", file);
             return;
         }
-        RDataTypeRegistry.getInstance().clearCustomDataTypes();
 
-        FileReader fr = new FileReader(getConfigFile());
-        BufferedReader reader = new BufferedReader(fr);
+        LOGGER.info("Reading custom R data types from '{}'.", file);
 
-        for (String line = reader.readLine(); line != null; line = reader.readLine()) {
-            if (line.startsWith(COMMENT_CHARACTER))
-                continue;
+        datatypeRegistry.clearCustomDataTypes();
 
-            StringTokenizer tokenizer = new StringTokenizer(line, ",");
-            if (tokenizer.countTokens() == 3) {
+        try (FileReader fr = new FileReader(getConfigFile()); BufferedReader reader = new BufferedReader(fr)) {
 
-                String key = tokenizer.nextToken().trim();
-                String mimetype = tokenizer.nextToken().trim();
-                String hint = tokenizer.nextToken().trim();
-                addNewDataType(key, mimetype, hint);
+            for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+                if (line.startsWith(COMMENT_CHARACTER)) {
+                    continue;
+                }
+
+                StringTokenizer tokenizer = new StringTokenizer(line, ",");
+                if (tokenizer.countTokens() == 3) {
+                    String key = tokenizer.nextToken().trim();
+                    String mimetype = tokenizer.nextToken().trim();
+                    String hint = tokenizer.nextToken().trim();
+                    addNewDataType(key, mimetype, hint);
+                }
             }
-
         }
-        reader.close();
-        fr.close();
     }
 
-    // TODO: add schema, default value;
-    private static void addNewDataType(String key,
-            String mimetype,
-            String hint)
-    {
+    private void addNewDataType(String key, String mimetype, String hint) {
         LOGGER.debug("Adding new data type with key '{}', mimetype '{}', and hint '{}'", key, mimetype, hint);
 
         CustomDataType type = new CustomDataType();
         type.setKey(key);
-        type.setProcessKey(mimetype);
+        type.setMimeType(mimetype);
         if (hint.equalsIgnoreCase(HINT_FILE)) {
             // type.setEncoding("base64");
             type.setComplex(true);
         }
 
-        RDataTypeRegistry.getInstance().register(type);
+        datatypeRegistry.register(type);
     }
 
-    public File getConfigFile()
-    {
+    public File getConfigFile() {
         return this.configFile;
-    }
-
-    public static CustomDataTypeManager getInstance()
-    {
-        if (instance == null)
-            instance = new CustomDataTypeManager();
-        return instance;
     }
 
 }
