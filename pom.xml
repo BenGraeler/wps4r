@@ -59,7 +59,7 @@
 				<groupId>com.mycila</groupId>
 				<artifactId>license-maven-plugin</artifactId>
 				<configuration>
-					<header>../misc/licenses/license_header.txt</header>
+					<header>misc/licenses/license_header.txt</header>
 				</configuration>
 			</plugin>
             <plugin>
